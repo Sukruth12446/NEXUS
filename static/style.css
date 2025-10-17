@@ -1,0 +1,11 @@
+body { font-family: Arial, Helvetica, sans-serif; margin:0; padding:0; background:#f5f7fa; color:#222;}
+.container { max-width:1000px; margin:20px auto; padding:12px; }
+header { background:#1b2330; color:white; padding:12px 0; margin-bottom:14px;}
+header a { color:white; text-decoration:none;}
+.pane { background:white; border-radius:6px; padding:12px; margin-bottom:12px; box-shadow:0 2px 6px rgba(0,0,0,0.05);}
+.project-list li { margin:8px 0; }
+.transcript-box { background:#f9f9f9; padding:8px; border-radius:4px; white-space:pre-wrap; max-height:180px; overflow:auto;}
+#storyboard { display:flex; gap:8px; flex-wrap:wrap; padding:8px;}
+.card { background:#fffbe6; padding:10px; width:180px; border-radius:6px; box-shadow:0 1px 3px rgba(0,0,0,0.08); cursor:grab;}
+textarea { width:100%; }
+.flash { background:#ffe8e8; padding:8px; border-radius:4px; margin-bottom:8px; }
