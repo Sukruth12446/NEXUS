@@ -11,11 +11,44 @@ import uuid
 from datetime import datetime
 import speech_recognition as sr
 from pydub import AudioSegment
+import subprocess
+import sys
 
 
 class AIPreProductionStudio:
     def __init__(self):
         self.init_session_state()
+        self.setup_ffmpeg()
+
+    def setup_ffmpeg(self):
+        """Setup FFmpeg path for pydub"""
+        try:
+            # Try to find ffmpeg in system PATH
+            if sys.platform == "win32":
+                # Windows - common installation paths
+                possible_paths = [
+                    "ffmpeg",
+                    "ffmpeg.exe",
+                    r"C:\ffmpeg\bin\ffmpeg.exe",
+                    r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"
+                ]
+            else:
+                # Linux/Mac
+                possible_paths = ["ffmpeg", "/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"]
+
+            for path in possible_paths:
+                try:
+                    subprocess.run([path, "-version"], capture_output=True, check=True)
+                    AudioSegment.converter = path
+                    st.sidebar.success("✅ FFmpeg found!")
+                    return
+                except:
+                    continue
+
+            st.sidebar.warning("⚠️ FFmpeg not found. Audio processing may not work properly.")
+
+        except Exception as e:
+            st.sidebar.warning(f"⚠️ FFmpeg setup issue: {e}")
 
     def init_session_state(self):
         """Initialize all session state variables"""
@@ -89,13 +122,13 @@ class AIPreProductionStudio:
             border: 2px solid #ddd;
             border-radius: 8px;
             margin: 5px 0;
-            background: black;
+            background: white;
             cursor: move;
         }
         .task-item {
             padding: 0.5rem;
             margin: 0.2rem 0;
-            background: black;
+            background: #f0f8ff;
             border-radius: 5px;
             border-left: 4px solid #007bff;
         }
@@ -301,6 +334,8 @@ class AIPreProductionStudio:
                             st.session_state.transcripts.append(transcript_data)
                             st.session_state.current_transcript = transcript_data
                             st.success("✅ Transcription Complete!")
+                        else:
+                            st.error("❌ Failed to transcribe YouTube video")
 
         with col2:
             st.write("**Video/Audio File Transcription**")
@@ -315,6 +350,8 @@ class AIPreProductionStudio:
                         st.session_state.transcripts.append(transcript_data)
                         st.session_state.current_transcript = transcript_data
                         st.success("✅ Transcription Complete!")
+                    else:
+                        st.error("❌ Failed to transcribe file")
 
         # Display current transcript with timestamps
         if st.session_state.current_transcript:
@@ -325,15 +362,26 @@ class AIPreProductionStudio:
         if video_file is None:
             return None
 
+        video_path = None
+        audio_path = None
+
         try:
-            # 1. Save uploaded file to a temporary video file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{video_file.name.split('.')[-1]}") as tmp_video:
+            # 1. Save uploaded file to a temporary file
+            file_extension = video_file.name.split('.')[-1].lower()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as tmp_video:
                 tmp_video.write(video_file.read())
                 video_path = tmp_video.name
 
             # 2. Extract audio using pydub
             st.info("Extracting audio from file...")
-            audio = AudioSegment.from_file(video_path)
+
+            # Handle different file types
+            if file_extension in ['mp3', 'wav', 'm4a']:
+                # Direct audio file
+                audio = AudioSegment.from_file(video_path)
+            else:
+                # Video file - extract audio
+                audio = AudioSegment.from_file(video_path)
 
             # 3. Save audio to a temporary WAV file for SpeechRecognition
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_audio:
@@ -343,15 +391,16 @@ class AIPreProductionStudio:
             # 4. Transcribe the audio
             st.info("Transcribing audio to text...")
             r = sr.Recognizer()
+
             with sr.AudioFile(audio_path) as source:
                 # Adjust for ambient noise and record
-                r.adjust_for_ambient_noise(source)
+                r.adjust_for_ambient_noise(source, duration=0.5)
                 audio_data = r.record(source)
 
                 # Using Google's STT (requires internet)
                 text = r.recognize_google(audio_data)
 
-                # Create transcript data structure
+            # Create transcript data structure
             transcript_data = {
                 "id": str(uuid.uuid4()),
                 "source": video_file.name,
@@ -367,22 +416,119 @@ class AIPreProductionStudio:
 
             return transcript_data
 
+        except sr.UnknownValueError:
+            st.error("❌ Could not understand the audio")
+            return None
+        except sr.RequestError as e:
+            st.error(f"❌ Error with speech recognition service: {e}")
+            return None
         except Exception as e:
-            st.error(f"An error occurred during transcription: {e}")
+            st.error(f"❌ An error occurred during transcription: {str(e)}")
             return None
 
         finally:
             # Clean up temporary files
-            if 'video_path' in locals() and os.path.exists(video_path):
-                os.remove(video_path)
-            if 'audio_path' in locals() and os.path.exists(audio_path):
-                os.remove(audio_path)
+            try:
+                if video_path and os.path.exists(video_path):
+                    os.remove(video_path)
+                if audio_path and os.path.exists(audio_path):
+                    os.remove(audio_path)
+            except Exception as e:
+                st.warning(f"⚠️ Could not clean up temporary files: {e}")
 
     def transcribe_youtube_with_timestamps(self, video_url: str) -> Dict:
-        """Transcribe YouTube video with timestamps"""
+        """Transcribe YouTube video with timestamps using yt-dlp"""
+        temp_dir = None
         try:
-            st.write("📥 Downloading YouTube video...")
+            st.info("📥 Downloading YouTube video...")
 
+            # Create a temporary directory for downloads
+            temp_dir = tempfile.mkdtemp()
+
+            # Use yt-dlp with better options
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
+                'quiet': False,
+                'no_warnings': False,
+                'extractaudio': True,
+                'audioformat': 'mp3',
+                'noplaylist': True,
+            }
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # Extract info first
+                info = ydl.extract_info(video_url, download=False)
+                video_title = info.get('title', 'Unknown')
+
+                # Now download
+                st.info(f"Downloading: {video_title}")
+                ydl.download([video_url])
+
+                # Find the downloaded file
+                downloaded_files = [f for f in os.listdir(temp_dir) if f.endswith(('.mp3', '.m4a', '.webm'))]
+
+                if not downloaded_files:
+                    st.error("❌ No audio file found after download")
+                    return None
+
+                audio_file_path = os.path.join(temp_dir, downloaded_files[0])
+
+                if not os.path.exists(audio_file_path):
+                    st.error(f"❌ Downloaded file not found: {audio_file_path}")
+                    return None
+
+                st.info(f"✅ Download complete: {os.path.getsize(audio_file_path)} bytes")
+
+            # Transcribe with whisper
+            st.info("🔊 Transcribing audio...")
+            model = whisper.load_model("base")
+            result = model.transcribe(audio_file_path, word_timestamps=True)
+
+            # Process with timestamps
+            transcript_data = {
+                "id": str(uuid.uuid4()),
+                "source": video_url,
+                "title": video_title,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "segments": []
+            }
+
+            for segment in result['segments']:
+                transcript_data['segments'].append({
+                    "start": segment['start'],
+                    "end": segment['end'],
+                    "text": segment['text'],
+                    "words": segment.get('words', [])
+                })
+
+            st.success(f"✅ Transcription complete: {len(transcript_data['segments'])} segments")
+            return transcript_data
+
+        except yt_dlp.DownloadError as e:
+            st.error(f"❌ YouTube download error: {str(e)}")
+            # Try alternative approach
+            return self.transcribe_youtube_alternative(video_url)
+        except Exception as e:
+            st.error(f"❌ Transcription error: {str(e)}")
+            import traceback
+            st.error(f"Detailed error: {traceback.format_exc()}")
+            return None
+        finally:
+            # Clean up temporary directory
+            if temp_dir and os.path.exists(temp_dir):
+                try:
+                    import shutil
+                    shutil.rmtree(temp_dir)
+                except:
+                    pass
+
+    def transcribe_youtube_alternative(self, video_url: str) -> Dict:
+        """Alternative YouTube transcription method using direct download"""
+        try:
+            st.info("🔄 Trying alternative download method...")
+
+            # Use pytube as fallback
             yt = YouTube(video_url)
             audio_stream = yt.streams.filter(only_audio=True).first()
 
@@ -390,12 +536,18 @@ class AIPreProductionStudio:
                 st.error("❌ No audio stream found")
                 return None
 
+            # Download to temporary file
             with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
                 temp_path = tmp_file.name
 
+            st.info(f"Downloading: {yt.title}")
             audio_stream.download(filename=temp_path)
 
-            # Transcribe with timestamps
+            if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
+                st.error("❌ Download failed - file is empty or doesn't exist")
+                return None
+
+            st.info("🔊 Transcribing with Whisper...")
             model = whisper.load_model("base")
             result = model.transcribe(temp_path, word_timestamps=True)
 
@@ -417,10 +569,11 @@ class AIPreProductionStudio:
                 })
 
             os.unlink(temp_path)
+            st.success("✅ Alternative method succeeded!")
             return transcript_data
 
         except Exception as e:
-            st.error(f"❌ Transcription error: {e}")
+            st.error(f"❌ Alternative method also failed: {str(e)}")
             return None
 
     def display_transcript_with_timestamps(self, transcript_data: Dict):
@@ -439,7 +592,7 @@ class AIPreProductionStudio:
                 st.write(segment['text'])
 
                 # Add to script button for each segment
-                if st.button("Add to Script", key=f"add_{segment['start']}"):
+                if st.button("Add to Script", key=f"add_{segment['start']}_{uuid.uuid4()}"):
                     st.session_state.script_content += f"\n\n[TIMESTAMP: {timestamp}]\n{segment['text']}"
                     st.success("Added to script!")
 
@@ -452,6 +605,7 @@ class AIPreProductionStudio:
             mime="text/plain"
         )
 
+    # ... (rest of your existing methods remain the same)
     def render_script_tab(self):
         """Smart Script Editor with AI-driven suggestions"""
         st.header("📝 Smart Script Editor")
@@ -622,15 +776,18 @@ class AIPreProductionStudio:
         """Generate category-specific suggestions"""
         suggestion_map = {
             "dialogue": [
-                {"type": "💬 Dialogue Improvement", "text": "Make conversations more natural with interruptions and reactions.",
+                {"type": "💬 Dialogue Improvement",
+                 "text": "Make conversations more natural with interruptions and reactions.",
                  "confidence": 87}
             ],
             "structure": [
-                {"type": "🏗️ Scence Structure", "text": "Ensure each scene has a clear objective and moves the story forward.",
+                {"type": "🏗️ Scence Structure",
+                 "text": "Ensure each scene has a clear objective and moves the story forward.",
                  "confidence": 85}
             ],
             "character": [
-                {"type": "👤 Character consistency", "text": "Give each character unique voice and consistent motivations.",
+                {"type": "👤 Character consistency",
+                 "text": "Give each character unique voice and consistent motivations.",
                  "confidence": 90}
             ]
         }
